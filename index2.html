@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Water Tank Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* Palette: deep slate bench, amber for the one thing that matters (the link to the board),
+     and four distinct signal colors for channels. */
+  :root {
+    --bg: #0e1620;
+    --panel: #142030;
+    --raised: #1a2a3c;
+    --line: #26384d;
+    --ink: #e8eef5;
+    --muted: #8a9bb0;
+    --amber: #f2b13a;
+    --amber-ink: #1a1204;
+    --ok: #5fd39b;
+    --warn: #f2b13a;
+    --error: #ff7a6b;
+    --tx: #9cc4ff;
+    --ch1: #5fd39b;
+    --ch2: #f2b13a;
+    --ch3: #7fb8ff;
+    --ch4: #ff8fb1;
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  * {
+     box-sizing: border-box; 
+    }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--sans); 
+    font-size: 14px; 
+    line-height: 1.4;
+    background: var(--bg);
+    color: var(--ink);
+    overflow: hidden;
+  }
+  :focus-visible { 
+      outline: 2px solid var(--amber);
+      outline-offset: 2px; 
+}
+  code {
+     font-family: var(--mono); 
+     
+    font-size: 0.92em; color: var(--ink); }
+
+  /* One-screen layout: header, readouts, main area (chart + log), bottom bar. */
+  .app {
+    height: 100%; padding: 14px; gap: 12px;
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+
+  /* Header */
+  .topbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .brand { font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em; margin-right: 6px; }
+  .status {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 5px 11px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line);
+    color: var(--muted); font-size: 0.86rem; white-space: nowrap;
+  }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .status[data-state="connected"] { color: var(--ink); }
+  .status[data-state="connected"] .dot { background: var(--ok); box-shadow: 0 0 0 3px rgba(95, 211, 155, 0.18); }
+  .status[data-state="connecting"] .dot { background: var(--amber); }
+  .status[data-state="error"] { color: var(--error); }
+  .status[data-state="error"] .dot { background: var(--error); }
+  .top-controls { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+
+  /* Controls */
+  select, input[type="text"] {
+    font: inherit; color: var(--ink);
+    background: var(--raised); border: 1px solid var(--line);
+    border-radius: 6px; padding: 0 10px; height: 34px;
+    min-width: 0;
+  }
+  input[type="text"]::placeholder { color: var(--muted); }
+  button {
+    font: inherit; font-weight: 500; height: 34px; padding: 0 13px;
+    border-radius: 6px; border: 1px solid var(--line);
+    background: var(--raised); color: var(--ink);
+    cursor: pointer; white-space: nowrap;
+  }
+  button:hover:not(:disabled) { border-color: #3d5670; }
+  button.primary { background: var(--amber); border-color: var(--amber); color: var(--amber-ink); font-weight: 600; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); border-color: var(--amber); }
+  button.quiet { background: transparent; border-color: transparent; color: var(--muted); }
+  button.quiet:hover:not(:disabled) { color: var(--ink); background: var(--raised); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .check { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.86rem; cursor: pointer; white-space: nowrap; }
+  .check input { accent-color: var(--amber); width: 15px; height: 15px; margin: 0; }
+  .field { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.86rem; white-space: nowrap; }
+
+  /* Message bar (floats above the layout so it never pushes panels around) */
+  .banner {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    z-index: 10; width: min(560px, calc(100% - 28px));
+    display: none; gap: 12px; align-items: flex-start;
+    padding: 12px 14px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--line);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  }
+  .banner.show { display: flex; }
+  .banner.error { border-color: var(--error); }
+  .banner.warn { border-color: var(--warn); }
+  .banner .title { font-weight: 600; display: block; }
+  .banner.error .title { color: var(--error); }
+  .banner.warn .title { color: var(--warn); }
+  .banner .text { margin: 3px 0 0; color: var(--muted); }
+  .banner ul { margin: 6px 0 0; padding-left: 18px; color: var(--ink); }
+  .banner .body { flex: 1; min-width: 0; }
+  .banner button { flex-shrink: 0; }
+
+  /* Panels */
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    min-height: 0; display: flex; flex-direction: column;
+  }
+  .panel-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-bottom: 1px solid var(--line);
+    color: var(--muted); font-size: 0.82rem;
+  }
+  .panel-head .count { margin-left: auto; font-family: var(--mono); font-size: 0.8rem; }
+  .paused-note { color: var(--amber); }
+
+  /* Readouts strip */
+  .readouts {
+    display: flex; gap: 10px; overflow-x: auto; padding: 10px;
+    scrollbar-width: thin;
+  }
+  .readout {
+    height: auto; min-width: 150px; flex: 0 0 auto;
+    display: grid; gap: 1px; text-align: left;
+    padding: 10px 14px;
+    background: var(--raised); border: 1px solid var(--line);
+    border-top: 3px solid var(--c, var(--line));
+  }
+  .readout[aria-pressed="false"] { opacity: 0.4; }
+  .readout .name { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); }
+  .readout .value { font-family: var(--mono); font-size: 1.6rem; font-weight: 500; line-height: 1.15; font-variant-numeric: tabular-nums; }
+  .readout .meta { font-family: var(--mono); font-size: 0.74rem; color: var(--muted); }
+  .readouts .hint { color: var(--muted); padding: 10px 4px; font-size: 0.9rem; }
+
+  /* Tank status: large message plus signal light, driven by the Level value */
+  .tank {
+    display: flex; align-items: center; gap: 14px;
+    margin: 10px 10px 0; padding: 12px 16px;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--raised);
+  }
+  .tank[hidden] { display: none; }
+  .tank .signal {
+    width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+    background: var(--muted);
+  }
+  .tank .tank-title { font-weight: 600; font-size: 1.05rem; letter-spacing: 0.02em; }
+  .tank .tank-sub { font-family: var(--mono); font-size: 0.85rem; color: var(--muted); margin-top: 2px; }
+
+  .tank[data-kind="low"] { border-color: var(--error); background: rgba(255, 122, 107, 0.12); }
+  .tank[data-kind="low"] .signal { background: var(--error); box-shadow: 0 0 0 5px rgba(255, 122, 107, 0.25); animation: blink 1s ease-in-out infinite; }
+  .tank[data-kind="low"] .tank-title { color: var(--error); }
+
+  .tank[data-kind="high"] { border-color: var(--ok); background: rgba(95, 211, 155, 0.12); }
+  .tank[data-kind="high"] .signal { background: var(--ok); box-shadow: 0 0 0 5px rgba(95, 211, 155, 0.25); }
+  .tank[data-kind="high"] .tank-title { color: var(--ok); }
+
+  .tank[data-kind="medium"] .signal { background: var(--amber); }
+  .tank[data-kind="medium"] .tank-title { color: var(--amber); }
+
+  @keyframes blink { 50% { opacity: 0.35; } }
+
+  /* Main: chart and log side by side, filling the remaining height */
+  .main {
+    display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: 12px; min-height: 0;
+  }
+  .chart-body { flex: 1; min-height: 0; position: relative; padding: 8px 10px 10px; }
+  canvas { position: absolute; inset: 8px 10px 10px; width: calc(100% - 20px); height: calc(100% - 18px); }
+  .chart-empty {
+    position: absolute; inset: 0; display: none;
+    align-items: center; justify-content: center; text-align: center;
+    color: var(--muted); padding: 20px; pointer-events: none;
+  }
+  .chart-empty.show { display: flex; }
+
+  .log-tools { display: flex; gap: 8px; align-items: center; margin-left: auto; }
+  .log-tools input[type="text"] { width: 150px; height: 28px; font-size: 0.85rem; padding: 0 8px; }
+  .log-tools .check { font-size: 0.8rem; }
+  .log-tools button { height: 28px; padding: 0 10px; font-size: 0.82rem; }
+
+  #log {
+    flex: 1; min-height: 0; overflow-y: auto;
+    padding: 8px 14px; font-family: var(--mono); font-size: 0.85rem; line-height: 1.55;
+    scrollbar-width: thin;
+  }
+  .row { display: grid; grid-template-columns: auto 1fr; gap: 10px; white-space: pre-wrap; word-break: break-word; }
+  .row .time { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .row.hidden-ts .time { display: none; }
+  .row.tx .text { color: var(--tx); }
+  .row.sys .text { color: var(--muted); font-style: italic; }
+  .row.err .text { color: var(--error); }
+  #log:empty::before {
+    content: "Waiting for the board. Connect, then output appears here.";
+    color: var(--muted); font-family: var(--sans); font-size: 0.9rem;
+  }
+
+  /* Bottom bar: send message */
+  .sendbar { display: flex; gap: 8px; align-items: center; }
+  .sendbar input[type="text"] { flex: 1; }
+  .sendbar select { height: 34px; }
+
+  /* Narrow screens: keep it usable without the one-screen rule */
+  @media (max-width: 760px) {
+    body { overflow: auto; }
+    .app { height: auto; min-height: 100%; grid-template-rows: none; }
+    .main { grid-template-columns: 1fr; }
+    .chart-body { height: 220px; flex: none; }
+    #log { height: 280px; flex: none; }
+    .top-controls { margin-left: 0; width: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <span class="brand">Water Tank Monitor</span>
+    <span class="status" id="statusPill" data-state="idle" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="statusText">Not connected</span>
+    </span>
+    <div class="top-controls">
+      <label class="field">Baud
+        <select id="baud" aria-label="Baud rate">
+          <option>9600</option>
+          <option>19200</option>
+          <option>38400</option>
+          <option>57600</option>
+          <option>115200</option>
+        </select>
+      </label>
+      <button id="connectBtn" class="primary">Connect board</button>
+      <button id="disconnectBtn" disabled>Disconnect</button>
+      <button id="saveBtn" class="quiet" title="Save the visible log to a text file">Save log</button>
+      <button id="clearBtn" class="quiet" title="Clear the log and readouts">Clear</button>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" role="alert">
+    <div class="body">
+      <span class="title" id="bannerTitle"></span>
+      <p class="text" id="bannerText"></p>
+      <ul id="bannerList" hidden></ul>
+    </div>
+    <button id="bannerClose" class="quiet" aria-label="Dismiss message">Dismiss</button>
+  </div>
+
+  <section class="panel" aria-label="Live values">
+    <div class="tank" id="tankStatus" data-kind="medium" hidden>
+      <span class="signal" aria-hidden="true"></span>
+      <div>
+        <div class="tank-title" id="tankTitle"></div>
+        <div class="tank-sub" id="tankSub"></div>
+      </div>
+    </div>
+    <div class="readouts" id="readouts">
+      <div class="hint">Lines like <code>Temp: 23.5</code> or <code>A0: 512</code> show up here as large numbers. Click one to hide it from the chart.</div>
+    </div>
+  </section>
+
+  <div class="main">
+    <section class="panel" aria-label="Chart">
+      <div class="panel-head">Trend</div>
+      <div class="chart-body">
+        <canvas id="chart" role="img" aria-label="Chart of recent numeric values"></canvas>
+        <div class="chart-empty" id="chartEmpty">The chart draws here once the board sends numbers.</div>
+      </div>
+    </section>
+
+    <section class="panel" aria-label="Serial output">
+      <div class="panel-head">
+        <span>Output</span>
+        <span class="count" id="count">0 lines</span>
+        <div class="log-tools">
+          <input type="text" id="filter" placeholder="Filter" aria-label="Filter lines">
+          <label class="check"><input type="checkbox" id="showTime" checked> Time</label>
+          <label class="check"><input type="checkbox" id="autoscroll" checked> Scroll</label>
+          <button id="pauseBtn" class="quiet" disabled>Pause</button>
+        </div>
+      </div>
+      <div id="log" role="log" aria-live="off" aria-label="Serial output"></div>
+    </section>
+  </div>
+
+  <div class="sendbar">
+    <select id="ending" aria-label="Line ending">
+      <option value="\n" selected>Newline</option>
+      <option value="\r\n">CR + newline</option>
+      <option value="">None</option>
+    </select>
+    <input type="text" id="sendText" placeholder="Type a message for the board and press Enter" disabled aria-label="Message to send">
+    <button id="sendBtn" disabled>Send</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const el = {
+    pill: $("statusPill"), statusText: $("statusText"),
+    banner: $("banner"), bannerTitle: $("bannerTitle"), bannerText: $("bannerText"),
+    bannerList: $("bannerList"), bannerClose: $("bannerClose"),
+    baud: $("baud"), connect: $("connectBtn"), disconnect: $("disconnectBtn"),
+    readouts: $("readouts"), chart: $("chart"), chartEmpty: $("chartEmpty"),
+    log: $("log"), filter: $("filter"), showTime: $("showTime"), autoscroll: $("autoscroll"),
+    pause: $("pauseBtn"), ending: $("ending"), sendText: $("sendText"), sendBtn: $("sendBtn"),
+    save: $("saveBtn"), clear: $("clearBtn"), count: $("count")
+  };
+
+  const MAX_LINES = 2000;
+  const MAX_POINTS = 150;
+  const CHANNEL_VARS = ["--ch1", "--ch2", "--ch3", "--ch4"];
+  const NUMBER_RE = /([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(-?\d+(?:\.\d+)?)/g;
+  const encoder = new TextEncoder();
+
+  const state = {
+    port: null, reader: null, writer: null, readableDone: null,
+    reading: false, buffer: "", connState: "idle",
+    entries: [], paused: false, pendingCount: 0,
+    channels: new Map(), hidden: new Set(), chartQueued: false
+  };
+
+  const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  /* ---------- Status and messages ---------- */
+
+  const STATE_LABELS = { idle: "Not connected", connecting: "Connecting…", connected: "Connected", error: "Problem" };
+
+  function setState(s, detail) {
+    state.connState = s;
+    el.pill.dataset.state = s;
+    el.statusText.textContent = detail || STATE_LABELS[s];
+    const live = state.port !== null;
+    el.connect.disabled = live || s === "connecting" || !("serial" in navigator);
+    el.disconnect.disabled = !live;
+    el.baud.disabled = live;
+    el.sendText.disabled = !live;
+    el.sendBtn.disabled = !live;
+    el.pause.disabled = !live && state.entries.length === 0;
+  }
+
+  function showBanner(kind, title, text, items) {
+    el.banner.className = "banner show " + kind;
+    el.bannerTitle.textContent = title;
+    el.bannerText.textContent = text || "";
+    el.bannerText.hidden = !text;
+    el.bannerList.replaceChildren();
+    (items || []).forEach((t) => {
+      const li = document.createElement("li");
+      li.textContent = t;
+      el.bannerList.appendChild(li);
+    });
+    el.bannerList.hidden = !(items && items.length);
+  }
+  const hideBanner = () => { el.banner.className = "banner"; };
+  el.bannerClose.addEventListener("click", hideBanner);
+
+  function explainError(err) {
+    const msg = (err && err.message) || String(err);
+    if (err && err.name === "NotFoundError") {
+      return { title: "No port selected", text: "Press Connect board and choose the CH340 port.", items: [] };
+    }
+    if (/Failed to open/i.test(msg)) {
+      return {
+        title: "Couldn't open the port",
+        text: "The board was found, but another program is using it. Try these:",
+        items: [
+          "Close the Arduino IDE Serial Monitor and Serial Plotter.",
+          "Close other browser tabs connected to this board.",
+          "Unplug the USB cable, wait 5 seconds, plug it back in, then connect again."
+        ]
+      };
+    }
+    if (err && err.name === "NetworkError") {
+      return { title: "The port is busy", text: "Another program has the port open. Close it and try again.", items: [] };
+    }
+    return { title: "Connection failed", text: msg, items: [] };
+  }
+
+  /* ---------- Log ---------- */
+
+  const pad = (n, l = 2) => String(n).padStart(l, "0");
+  const timeString = (d) => pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds()) + "." + pad(d.getMilliseconds(), 3);
+
+  function makeRow(entry) {
+    const row = document.createElement("div");
+    row.className = "row " + entry.type + (el.showTime.checked ? "" : " hidden-ts");
+    const t = document.createElement("span");
+    t.className = "time";
+    t.textContent = timeString(entry.time);
+    const txt = document.createElement("span");
+    txt.className = "text";
+    txt.textContent = entry.text;
+    row.append(t, txt);
+    return row;
+  }
+
+  const matchesFilter = (entry) => {
+    const f = el.filter.value.trim().toLowerCase();
+    return !f || entry.text.toLowerCase().includes(f);
+  };
+
+  function updateCount() {
+    const total = state.entries.length;
+    const visible = state.entries.filter(matchesFilter).length;
+    let label = (visible === total ? total : visible + " of " + total) + " lines";
+    el.count.textContent = label;
+    if (state.paused && state.pendingCount) {
+      el.count.insertAdjacentHTML("beforeend", ' · <span class="paused-note">' + state.pendingCount + " new while paused</span>");
+    }
+  }
+
+  function scrollIfNeeded() {
+    if (el.autoscroll.checked && !state.paused) el.log.scrollTop = el.log.scrollHeight;
+  }
+
+  function renderLog() {
+    const frag = document.createDocumentFragment();
+    state.entries.forEach((e) => { if (matchesFilter(e)) frag.appendChild(makeRow(e)); });
+    el.log.replaceChildren(frag);
+    scrollIfNeeded();
+    updateCount();
+  }
+
+  function addEntry(type, text) {
+    const entry = { type, text, time: new Date() };
+    state.entries.push(entry);
+    if (state.entries.length > MAX_LINES) state.entries.shift();
+    if (state.paused) {
+      state.pendingCount++;
+    } else if (matchesFilter(entry)) {
+      el.log.appendChild(makeRow(entry));
+      while (el.log.childElementCount > MAX_LINES) el.log.removeChild(el.log.firstChild);
+      scrollIfNeeded();
+    }
+    updateCount();
+  }
+
+  function togglePause() {
+    state.paused = !state.paused;
+    el.pause.textContent = state.paused ? "Resume" : "Pause";
+    if (!state.paused) state.pendingCount = 0;
+    renderLog();
+  }
+
+  /* ---------- Numbers, readouts, chart ---------- */
+
+  function parseNumbers(line) {
+    const found = [];
+    let m;
+    NUMBER_RE.lastIndex = 0;
+    while ((m = NUMBER_RE.exec(line)) !== null) found.push([m[1], parseFloat(m[2])]);
+    return found;
+  }
+
+  function updateChannels(line) {
+    const pairs = parseNumbers(line);
+    if (!pairs.length) return;
+    pairs.forEach(([name, value]) => {
+      let ch = state.channels.get(name);
+      if (!ch) {
+        ch = { name, values: [], colorVar: CHANNEL_VARS[state.channels.size % CHANNEL_VARS.length], latest: value, min: value, max: value };
+        state.channels.set(name, ch);
+      }
+      ch.values.push(value);
+      if (ch.values.length > MAX_POINTS) ch.values.shift();
+      ch.latest = value;
+      ch.min = Math.min(ch.min, value);
+      ch.max = Math.max(ch.max, value);
+    });
+    renderReadouts();
+    queueChart();
+  }
+
+  // Level 0-10 = LOW (red), 90-100 = HIGH (green), otherwise MEDIUM (amber)
+  function updateTankStatus(level) {
+    const box = $("tankStatus");
+    let kind, title, detail;
+    if (level <= 10) {
+      kind = "low";
+      title = "LOW WATER";
+      detail = "Level " + level + "%. Pump should be running to refill the tank.";
+    } else if (level >= 90) {
+      kind = "high";
+      title = "TANK FULL";
+      detail = "Level " + level + "%. Pump should be off.";
+    } else {
+      kind = "medium";
+      title = "WATER LEVEL NORMAL";
+      detail = "Level " + level + "%.";
+    }
+    box.dataset.kind = kind;
+    box.hidden = false;
+    $("tankTitle").textContent = title;
+    $("tankSub").textContent = detail;
+  }
+
+  const formatNum = (n) => (n === null || n === undefined) ? "–" : (Number.isInteger(n) ? String(n) : n.toFixed(2));
+
+  function renderReadouts() {
+    if (!state.channels.size) return;
+    const frag = document.createDocumentFragment();
+    state.channels.forEach((ch) => {
+      const on = !state.hidden.has(ch.name);
+      const btn = document.createElement("button");
+      btn.className = "readout";
+      btn.style.setProperty("--c", "var(" + ch.colorVar + ")");
+      btn.setAttribute("aria-pressed", String(on));
+      btn.title = on ? "Click to hide from chart" : "Click to show on chart";
+      const name = document.createElement("span"); name.className = "name"; name.textContent = ch.name;
+      const value = document.createElement("span"); value.className = "value"; value.textContent = formatNum(ch.latest);
+      const meta = document.createElement("span"); meta.className = "meta";
+      meta.textContent = "min " + formatNum(ch.min) + "  max " + formatNum(ch.max);
+      btn.append(name, value, meta);
+      btn.addEventListener("click", () => {
+        if (state.hidden.has(ch.name)) state.hidden.delete(ch.name); else state.hidden.add(ch.name);
+        renderReadouts();
+        queueChart();
+      });
+      frag.appendChild(btn);
+    });
+    el.readouts.replaceChildren(frag);
+  }
+
+  function queueChart() {
+    if (state.chartQueued) return;
+    state.chartQueued = true;
+    requestAnimationFrame(() => { state.chartQueued = false; drawChart(); });
+  }
+
+  function drawChart() {
+    const canvas = el.chart;
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const W = rect.width, H = rect.height;
+    if (!W || !H) return;
+    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+      canvas.width = Math.round(W * dpr);
+      canvas.height = Math.round(H * dpr);
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    el.chartEmpty.classList.toggle("show", state.channels.size === 0);
+    const visible = [...state.channels.values()].filter((c) => !state.hidden.has(c.name) && c.values.length > 1);
+    if (!visible.length) return;
+
+    let lo = Infinity, hi = -Infinity;
+    visible.forEach((c) => c.values.forEach((v) => { if (v < lo) lo = v; if (v > hi) hi = v; }));
+    if (lo === hi) { lo -= 1; hi += 1; }
+    const margin = (hi - lo) * 0.08;
+    lo -= margin; hi += margin;
+
+    const padL = 46, padR = 6, padT = 6, padB = 6;
+    const plotW = W - padL - padR, plotH = H - padT - padB;
+    const yFor = (v) => padT + (1 - (v - lo) / (hi - lo)) * plotH;
+    const xFor = (i) => padL + (i / (MAX_POINTS - 1)) * plotW;
+
+    // Grid and y-axis labels
+    const gridColor = cssVar("--line");
+    const labelColor = cssVar("--muted");
+    ctx.font = "11px " + "IBM Plex Mono, monospace";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "right";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const v = lo + ((hi - lo) * i) / 4;
+      const y = Math.round(yFor(v)) + 0.5;
+      ctx.strokeStyle = gridColor;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+      ctx.fillStyle = labelColor;
+      ctx.fillText(formatNum(Math.round(v * 10) / 10), padL - 8, y);
+    }
+
+    // Series
+    visible.forEach((c) => {
+      const offset = MAX_POINTS - c.values.length;
+      ctx.strokeStyle = cssVar(c.colorVar);
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      c.values.forEach((v, i) => {
+        const x = xFor(offset + i), y = yFor(v);
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    });
+  }
+
+  window.addEventListener("resize", queueChart);
+  if ("ResizeObserver" in window) new ResizeObserver(queueChart).observe(el.chart.parentElement);
+
+  /* ---------- Serial connection ---------- */
+
+  const safeStore = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
+  const safeLoad = (k) => { try { return localStorage.getItem(k); } catch (_) { return null; } };
+
+  function onRawLine(line) {
+    const clean = line.replace(/\r$/, "");
+    addEntry("rx", clean);
+    updateChannels(clean);
+    const lv = parseNumbers(clean).find((p) => p[0] === "Level");
+    if (lv) updateTankStatus(lv[1]);
+  }
+
+  function startReading(port) {
+    const decoder = new TextDecoderStream();
+    state.readableDone = port.readable.pipeTo(decoder.writable).catch(() => {});
+    state.reader = decoder.readable.getReader();
+    (async () => {
+      try {
+        while (state.reading) {
+          const { value, done } = await state.reader.read();
+          if (done) break;
+          if (value) {
+            state.buffer += value;
+            let idx;
+            while ((idx = state.buffer.indexOf("\n")) !== -1) {
+              onRawLine(state.buffer.slice(0, idx));
+              state.buffer = state.buffer.slice(idx + 1);
+            }
+          }
+        }
+      } catch (_) {
+        // handled below if still connected
+      }
+      if (state.reading) handleUnexpectedDisconnect();
+    })();
+  }
+
+  async function closePort() {
+    state.reading = false;
+    try { if (state.reader) await state.reader.cancel(); } catch (_) {}
+    try { if (state.readableDone) await state.readableDone; } catch (_) {}
+    try { if (state.writer) state.writer.releaseLock(); } catch (_) {}
+    try { if (state.port) await state.port.close(); } catch (_) {}
+    state.port = null; state.reader = null; state.writer = null;
+    state.readableDone = null; state.buffer = "";
+  }
+
+  async function connect() {
+    hideBanner();
+    setState("connecting", "Choosing port…");
+    try {
+      const port = await navigator.serial.requestPort();
+      setState("connecting", "Opening port…");
+      await port.open({ baudRate: Number(el.baud.value) });
+      state.port = port;
+      safeStore("baud", el.baud.value);
+      state.writer = port.writable.getWriter();
+      state.reading = true;
+      startReading(port);
+      setState("connected", "Connected · " + el.baud.value + " baud");
+      addEntry("sys", "Connected at " + el.baud.value + " baud");
+    } catch (err) {
+      const info = explainError(err);
+      setState("error", info.title);
+      showBanner("error", info.title, info.text, info.items);
+      await closePort();
+    }
+  }
+
+  async function disconnect() {
+    await closePort();
+    addEntry("sys", "Disconnected");
+    setState("idle");
+  }
+
+  function handleUnexpectedDisconnect() {
+    addEntry("err", "Board disconnected");
+    closePort().then(() => {
+      setState("error", "Board disconnected");
+      showBanner("warn", "Board disconnected", "Reconnect the USB cable, then press Connect board.", []);
+    });
+  }
+
+  if ("serial" in navigator) {
+    navigator.serial.addEventListener("disconnect", (e) => {
+      if (state.port && e.target === state.port) handleUnexpectedDisconnect();
+    });
+  }
+
+  async function send() {
+    const text = el.sendText.value;
+    if (!text || !state.writer) return;
+    try {
+      await state.writer.write(encoder.encode(text + el.ending.value));
+      addEntry("tx", "> " + text);
+      el.sendText.value = "";
+    } catch (_) {
+      showBanner("error", "Couldn't send", "The board didn't accept the message. Check the connection.", []);
+    }
+  }
+
+  /* ---------- Save, clear, wiring ---------- */
+
+  function saveLog() {
+    const lines = state.entries.filter(matchesFilter).map((e) => "[" + timeString(e.time) + "] " + e.text);
+    const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "serial-log-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".txt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  function clearAll() {
+    state.entries = [];
+    state.channels.clear();
+    state.hidden.clear();
+    state.pendingCount = 0;
+    el.readouts.innerHTML = '<div class="hint">Numbers from the board will appear here.</div>';
+    $("tankStatus").hidden = true;
+    el.log.replaceChildren();
+    queueChart();
+    updateCount();
+  }
+
+  el.connect.addEventListener("click", connect);
+  el.disconnect.addEventListener("click", disconnect);
+  el.sendBtn.addEventListener("click", send);
+  el.sendText.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+  el.pause.addEventListener("click", togglePause);
+  el.filter.addEventListener("input", renderLog);
+  el.showTime.addEventListener("change", renderLog);
+  el.save.addEventListener("click", saveLog);
+  el.clear.addEventListener("click", clearAll);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && document.activeElement === el.filter) { el.filter.value = ""; renderLog(); }
+  });
+
+  // Start-up
+  const savedBaud = safeLoad("baud");
+  el.baud.value = [...el.baud.options].some((o) => o.value === savedBaud) ? savedBaud : "9600";
+  if (!("serial" in navigator)) {
+    setState("error", "Browser not supported");
+    showBanner("error", "This browser can't connect to boards", "Open this page in Chrome or Edge on a computer.", []);
+  } else {
+    setState("idle");
+  }
+  updateCount();
+  queueChart();
+})();
+</script>
+</body>
+</html>
